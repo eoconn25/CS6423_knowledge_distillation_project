@@ -1,0 +1,5 @@
+*.pyc
+
+data/
+RadImageNet_weights/
+trained_models/
