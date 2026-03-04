@@ -96,7 +96,7 @@ class datasetPrepper:
                 self.train_dataset,
                 batch_size=self.batch_size,
                 sampler=sampler,
-                num_workers=4,
+                num_workers=1,
                 pin_memory=True,
             )
         else:
