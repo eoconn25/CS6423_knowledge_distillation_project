@@ -43,6 +43,7 @@ def train_supernet(supernet, teacher, paths_sampled, train_loader, optimizer, ep
     teacher.eval() # make sure teacher is frozen
 
     for batch_idx, (images, labels) in enumerate(train_loader):
+        best_path_loss = 0.0
         images, labels = images.cuda(), labels.cuda()
         
         # run forward pass through teacher to get logits
@@ -51,7 +52,16 @@ def train_supernet(supernet, teacher, paths_sampled, train_loader, optimizer, ep
         
         if epoch < warmup_epochs:
             top_configs = sample_configs(1)  # just sample one path while we warm up
-            best_path_loss = 0.0
+            
+            optimizer.zero_grad()
+            student_logits = supernet(images, top_configs[0])
+            loss = criterion(student_logits, teacher_logits, labels)
+            loss.backward()
+            
+            torch.nn.utils.clip_grad_norm_(supernet.parameters(), max_norm=5.0)
+            optimizer.step()
+            
+            best_path_loss = loss.item()
         else:
             # greedily select M paths
             candidate_configs = sample_configs(num_samples=paths_sampled)  # get configs for paths
@@ -67,6 +77,7 @@ def train_supernet(supernet, teacher, paths_sampled, train_loader, optimizer, ep
             # sort paths by lowest loss and grab the top k
             path_scores.sort(key=lambda x: x[0])
             top_configs = [x[1] for x in path_scores[:2]]  # k=2
+            best_path_loss = path_scores[0][0]
         
         # set back to train, zero grads
         supernet.train()
@@ -79,9 +90,12 @@ def train_supernet(supernet, teacher, paths_sampled, train_loader, optimizer, ep
             loss = criterion(student_logits, teacher_logits, labels)
             loss.backward()  # accumulate grads for all k paths
         
+        torch.nn.utils.clip_grad_norm_(supernet.parameters(), max_norm=5.0)
         optimizer.step()
 
         if batch_idx % 10 == 0:
             # now on to Carl, for weather
             phase = "warm" if epoch < warmup_epochs else "greed"
             print(f"Epoch {epoch} | {phase} | Batch {batch_idx}: current path loss is {best_path_loss:.4f}")
+        
+        return best_path_loss
