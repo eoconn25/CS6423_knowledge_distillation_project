@@ -7,8 +7,8 @@ from collections import OrderedDict
 
 
 class ImagenetLoader:
-    REPLACEMENT_DROPOUT_RATE = 0.5
-    REPLACEMENT_NUM_CLASSES = 122
+    REPLACEMENT_DROPOUT_RATE = 0.2
+    REPLACEMENT_NUM_CLASSES = 61
 
     BACKBONE_OUT_FEATURES = {
         "resnet10t": 512,
@@ -57,12 +57,16 @@ class ImagenetLoader:
             )
             self._load_pretrained_weights(weights_path)
 
-    def freeze_backbone(self):
+    def freeze_backbone(self, finetune_layer4=False):
         for param in self.model.parameters():
             param.requires_grad = False
 
         for param in self.model.fc.parameters():
             param.requires_grad = True
+
+        if finetune_layer4:
+            for param in self.model.layer4.parameters():
+                param.requires_grad = True
 
     def get_trainable_params(self):
         return [p for p in self.model.parameters() if p.requires_grad]

@@ -1,4 +1,5 @@
 import torch
+import os
 from torch.utils.data import DataLoader, WeightedRandomSampler
 from torchvision import transforms
 from sklearn.model_selection import train_test_split
@@ -13,17 +14,21 @@ class datasetPrepper:
         dataframe_path,
         image_dir="data/test_images",
         test_split=0.2,
+        val_test_split=0.2,
         random_state=43,
         batch_size=32,
     ):
         self.df = pd.read_csv(dataframe_path)
-        self.image_dir = image_dir
+        self.image_dir = os.path.abspath(image_dir)
         self.test_split = test_split
+        self.val_test_split = val_test_split
         self.random_state = random_state
         self.batch_size = batch_size
 
         self.train_dataset = None
         self.val_dataset = None
+        self.test_dataset = None
+
         self.train_loader = None
         self.val_loader = None
         self.class_names = None
@@ -33,10 +38,17 @@ class datasetPrepper:
         train_transform = self.get_train_transform()
         val_transform = self.get_val_transform()
 
-        train_df, val_df = train_test_split(
+        train_df, temp_df = train_test_split(
             self.df,
             test_size=self.test_split,
             stratify=self.df["label"],
+            random_state=self.random_state,
+        )
+
+        val_df, test_df = train_test_split(
+            temp_df,
+            test_size=self.val_test_split,
+            stratify=temp_df["label"],
             random_state=self.random_state,
         )
 
@@ -47,10 +59,14 @@ class datasetPrepper:
             val_df, self.image_dir, transform=val_transform
         )
 
+        self.test_dataset = radImageDataset(
+            test_df, self.image_dir, transform=val_transform
+        )
+
         self.class_names = self.train_dataset.class_names
 
         if compute_class_weights:
-            self._compute_class_weights()
+            self._compute_class_weights(train_df)
 
         self._create_loaders()
 
@@ -77,8 +93,8 @@ class datasetPrepper:
             ]
         )
 
-    def _compute_class_weights(self):
-        counts = self.df["label"].value_counts().sort_index().values
+    def _compute_class_weights(self, train_df):
+        counts = train_df["label"].value_counts().sort_index().values
         self.class_weights = 1.0 / torch.tensor(counts, dtype=torch.float)
         self.class_weights = self.class_weights / self.class_weights.sum() * len(counts)
 
@@ -105,5 +121,9 @@ class datasetPrepper:
             )
 
         self.val_loader = DataLoader(
-            self.val_dataset, batch_size=self.batch_size, shuffle=False
+            self.val_dataset, batch_size=self.batch_size, shuffle=False, num_workers=1
+        )
+
+        self.test_loader = DataLoader(
+            self.test_dataset, batch_size=self.batch_size, shuffle=False, num_workers=1
         )

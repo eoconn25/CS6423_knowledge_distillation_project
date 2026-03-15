@@ -14,7 +14,7 @@ class modelTrainer:
         model,
         data_prep,
         device=None,
-        learn_rate=0.001,
+        learn_rate=1e-4,
         num_epochs=10,
         model_name="model",
     ):
@@ -32,22 +32,49 @@ class modelTrainer:
         self.loss_fn = None
         self.classnum_to_label_map = None
 
-        self.history = {"train_loss": [], "train_f1": [], "val_loss": [], "val_f1": [], "epoch_time": []}
+        self.history = {
+            "train_loss": [],
+            "train_f1": [],
+            "val_loss": [],
+            "val_f1": [],
+            "epoch_time": [],
+        }
 
-    def prepare_for_training(self, trainable_params=None):
+    def prepare_for_training(self, trainable_params=None, loss_fn=None):
         self.model = self.model.to(self.device)
         self.freeze_batch_norm()
 
-        if trainable_params is None:
-            trainable_params = [p for p in self.model.parameters() if p.requires_grad]
+        layer4_params = [p for p in self.model.layer4.parameters() if p.requires_grad]
+        fc_params = [p for p in self.model.fc.parameters() if p.requires_grad]
 
-        self.optimizer = optim.Adam(trainable_params, lr=self.learn_rate)
+        if layer4_params:
+            self.optimizer = optim.AdamW(
+                [
+                    {"params": layer4_params, "lr": self.learn_rate * 0.1},
+                    {"params": fc_params, "lr": self.learn_rate},
+                ],
+                weight_decay=1e-2,
+            )
+        else:
+            if trainable_params is None:
+                trainable_params = [
+                    p for p in self.model.parameters() if p.requires_grad
+                ]
+            self.optimizer = optim.AdamW(
+                trainable_params, lr=self.learn_rate, weight_decay=1e-2
+            )
 
         class_weights = None
         if self.data_prep.class_weights is not None:
             class_weights = self.data_prep.class_weights.to(self.device)
+        else:
+            print("No class weights provided. Defaulting to unweighted loss")
 
-        self.loss_fn = nn.CrossEntropyLoss(weight=class_weights)
+        if loss_fn:
+            self.loss_fn = loss_fn
+        else:
+            self.loss_fn = nn.CrossEntropyLoss(weight=class_weights)
+
         self.create_classnum_to_label_map(self.data_prep.class_names)
 
     def freeze_batch_norm(self):
@@ -118,12 +145,11 @@ class modelTrainer:
 
         return avg_loss, macro_f1
 
-    def save_model(self, current_epoch):
+    def save_history(self, current_epoch):
         model_dir = os.path.join("trained_models", self.model_name)
         os.makedirs(model_dir, exist_ok=True)
 
-        checkpoint = {
-            "model": self.model.state_dict(),
+        history_data = {
             "epoch": current_epoch,
             "loss_history": self.history.get("train_loss", []),
             "val_loss_history": self.history.get("val_loss", []),
@@ -133,11 +159,22 @@ class modelTrainer:
             "model_name": self.model_name,
         }
 
-        torch.save(checkpoint, os.path.join(model_dir, f"{self.model_name}.pth"))
+        with open(os.path.join(model_dir, "history.json"), "w") as f:
+            json.dump(history_data, f)
+
+    def save_model(self, current_epoch):
+        model_dir = os.path.join("trained_models", self.model_name)
+        os.makedirs(model_dir, exist_ok=True)
+
+        torch.save(
+            {"model": self.model.state_dict(), "epoch": current_epoch},
+            os.path.join(model_dir, f"{self.model_name}.pth"),
+        )
 
         if self.classnum_to_label_map:
-            mapping_path = os.path.join(model_dir, "classnum_to_label_mapping.json")
-            with open(mapping_path, "w") as f:
+            with open(
+                os.path.join(model_dir, "classnum_to_label_mapping.json"), "w"
+            ) as f:
                 json.dump(self.classnum_to_label_map, f)
 
     def load_model(self, path=None):
@@ -147,6 +184,7 @@ class modelTrainer:
         self.model.load_state_dict(torch.load(load_path, map_location=self.device))
 
     def train_all(self):
+        best_val_f1 = 0
         for epoch in range(self.num_epochs):
             epoch_start_time = time.time()
             train_loss, train_f1 = self.train_epoch(epoch)
@@ -159,7 +197,11 @@ class modelTrainer:
             self.history["val_f1"].append(val_f1)
             self.history["epoch_time"].append(epoch_time)
 
-            self.save_model(current_epoch=epoch + 1)
+            if val_f1 > best_val_f1:
+                best_val_f1 = val_f1
+                self.save_model(current_epoch=epoch + 1)
+
+            self.save_history(current_epoch=epoch + 1)
 
             print(f"\nEpoch {epoch+1}/{self.num_epochs}")
             print(f"Train Loss: {train_loss:.4f} | Train F1: {train_f1:.4f}")
