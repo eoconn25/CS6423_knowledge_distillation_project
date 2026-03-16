@@ -55,12 +55,18 @@ class datasetPrepper:
         self.train_dataset = radImageDataset(
             train_df, self.image_dir, transform=train_transform
         )
-        self.val_dataset = radImageDataset(
-            val_df, self.image_dir, transform=val_transform
-        )
 
+        self.val_dataset = radImageDataset(
+            val_df,
+            self.image_dir,
+            transform=val_transform,
+            class_names=self.train_dataset.class_names,
+        )
         self.test_dataset = radImageDataset(
-            test_df, self.image_dir, transform=val_transform
+            test_df,
+            self.image_dir,
+            transform=val_transform,
+            class_names=self.train_dataset.class_names,
         )
 
         self.class_names = self.train_dataset.class_names

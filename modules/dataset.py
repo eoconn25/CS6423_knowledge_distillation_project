@@ -5,13 +5,18 @@ import os
 
 
 class radImageDataset(Dataset):
-    def __init__(self, dataframe, image_dir, transform=None):
+    def __init__(self, dataframe, image_dir, transform=None, class_names=None):
         self.df = dataframe
         self.image_dir = image_dir
         self.transform = transform
 
-        self.labels = self.df["label"].astype("category").cat.codes.values
-        self.class_names = self.df["label"].astype("category").cat.categories
+        if class_names is None:
+            self.class_names = self.df["label"].astype("category").cat.categories
+        else:
+            self.class_names = class_names
+
+        label_to_idx = {name: i for i, name in enumerate(self.class_names)}
+        self.labels = self.df["label"].map(label_to_idx).values
 
     def __len__(self):
         return len(self.df)
