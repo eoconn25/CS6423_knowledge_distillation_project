@@ -14,7 +14,7 @@ class modelTrainer:
         model,
         data_prep,
         device=None,
-        learn_rate=1e-4,
+        learn_rate=1e-3,
         num_epochs=10,
         model_name="model",
     ):
