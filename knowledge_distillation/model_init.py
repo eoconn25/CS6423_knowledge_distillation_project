@@ -29,9 +29,10 @@ class CustomConv(nn.Conv2d):
 
 # this will build out each "stage" of the supernet
 class CustomStage(nn.Module):
-    def __init__(self, in_c, mid_c, out_c, stride=1):
+    def __init__(self, in_c, mid_c, out_c, max_exp, stride=1):
         super().__init__()
-        max_mid_channels = mid_c * 6  # this is our max possible expansion, so we init with that
+        self.max_exp = max_exp
+        max_mid_channels = int(mid_c * self.max_exp)  # this is our max possible expansion, so we init with that
         
         # this encompasses a full ResNet stage - a few convolutions and normalizations
         self.conv1 = CustomConv(in_c, max_mid_channels, kernel_size=1)
@@ -58,7 +59,7 @@ class CustomStage(nn.Module):
             return self.shortcut(x)
         
         # calculates how many channels to use based on the expansion ratio
-        active_mid = round(self.conv3.active_in_channels / 6 * expansion_ratio)
+        active_mid = round(self.conv3.active_in_channels / self.max_exp * expansion_ratio)
         
         # set channels for internal layers to what we calculated
         self.conv1.active_out_channels = active_mid
@@ -100,9 +101,10 @@ class CustomBatchNorm(nn.BatchNorm2d):
     
 # big class to actually orchestrate the supernet, build the blocks, etc
 class Supernet(nn.Module):
-    def __init__(self, width_mult_list, num_classes=122):
+    def __init__(self, width_mult_list, expansion_list, num_classes=122):
         super().__init__()
         self.max_w = max(width_mult_list)  # get the max width possible in search space
+        self.max_exp = max(expansion_list)
         
         # stem where we will take the image input and scale it up to our first layer's filters (64*max width)
         self.stem = nn.Sequential(
@@ -130,7 +132,7 @@ class Supernet(nn.Module):
             # following resnet50 architecture, we downsample the first conv block, unless it is the first stage
             stride = 2 if i == 0 and mid_c != 64 else 1
             blocks_in = in_c if i==0 else int(out_c*self.max_w)
-            blocks.append(CustomStage(blocks_in, int(mid_c * self.max_w), int(out_c * self.max_w), stride))
+            blocks.append(CustomStage(blocks_in, int(mid_c * self.max_w), int(out_c * self.max_w), int(self.max_exp), stride))
         return nn.ModuleList(blocks)
     
     
