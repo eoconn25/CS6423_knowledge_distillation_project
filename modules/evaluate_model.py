@@ -6,7 +6,8 @@ import pandas as pd
 
 
 class ModelEvaluator:
-    def __init__(self, data_loader, class_names=None, device=None):
+    def __init__(self, data_loader, class_names=None, device=None, silent=False):
+        self.silent = silent
         self.data_loader = data_loader
         self.class_names = class_names
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -30,14 +31,16 @@ class ModelEvaluator:
         all_labels = []
 
         # run 5 batches to "wake up" the GPU and allocate memory
-        print(f"\nWarming up {model_name}...")
+        if not self.silent:
+            print(f"\nWarming up {model_name}...")
         with torch.no_grad():
             for i, (images, _) in enumerate(self.data_loader):
                 _ = model(images.to(self.device))
                 if i >= 5:
                     break
 
-        print(f"Running inference...")
+        if not self.silent:
+            print(f"Running inference...")
         total_time = 0.0
         num_samples = 0
 
@@ -71,6 +74,7 @@ class ModelEvaluator:
             "avg_latency_ms": avg_latency_ms,
             "model_size_mb": self._get_model_size_mb(model),
             "device": self.device,
+            "total_parameters": sum((p != 0).sum().item() for p in model.parameters())
         }
 
         self.results[model_name] = metrics
