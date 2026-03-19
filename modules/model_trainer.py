@@ -162,14 +162,20 @@ class modelTrainer:
         with open(os.path.join(model_dir, "history.json"), "w") as f:
             json.dump(history_data, f)
 
-    def save_model(self, current_epoch):
+    def save_model(self, current_epoch, save_as_object=False):
         model_dir = os.path.join("trained_models", self.model_name)
         os.makedirs(model_dir, exist_ok=True)
 
-        torch.save(
-            {"model": self.model.state_dict(), "epoch": current_epoch},
-            os.path.join(model_dir, f"{self.model_name}.pth"),
-        )
+        if save_as_object:
+            torch.save(
+                {"model": self.model, "epoch": current_epoch},
+                os.path.join(model_dir, f"{self.model_name}_full.pth"),
+            )
+        else:
+            torch.save(
+                {"model": self.model.state_dict(), "epoch": current_epoch},
+                os.path.join(model_dir, f"{self.model_name}.pth"),
+            )
 
         if self.classnum_to_label_map:
             with open(
@@ -183,7 +189,7 @@ class modelTrainer:
         )
         self.model.load_state_dict(torch.load(load_path, map_location=self.device))
 
-    def train_all(self):
+    def train_all(self, save_as_object=False):
         best_val_f1 = 0
         for epoch in range(self.num_epochs):
             epoch_start_time = time.time()
@@ -199,7 +205,7 @@ class modelTrainer:
 
             if val_f1 > best_val_f1:
                 best_val_f1 = val_f1
-                self.save_model(current_epoch=epoch + 1)
+                self.save_model(current_epoch=epoch + 1, save_as_object=save_as_object)
 
             self.save_history(current_epoch=epoch + 1)
 
