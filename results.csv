@@ -9,3 +9,19 @@ Random Pruning,resnet50,74.83,0.0
 Magnitude Pruning,resnet50,74.83,0.037
 Random Pruning,resnet50,89.8,0.0
 Magnitude Pruning,resnet50,89.8,0.0031
+N/A,resnet50,0.0,0.4938
+Random Pruning,resnet50,9.98,0.1167
+Magnitude Pruning,resnet50,9.98,0.4967
+Random Pruning,resnet50,24.94,0.0008
+Magnitude Pruning,resnet50,24.94,0.4947
+Random Pruning,resnet50,49.89,0.0026
+Magnitude Pruning,resnet50,49.89,0.4294
+Random Pruning,resnet50,74.83,0.0
+Magnitude Pruning,resnet50,74.83,0.0369
+Random Pruning,resnet50,89.8,0.0002
+Magnitude Pruning,resnet50,89.8,0.0031
+RGP,resnet50,4.53,0.3054
+RGP,resnet50,7.16,0.2954
+RGP,resnet50,10.01,0.285
+RGP,resnet50,12.64,0.2901
+RGP,resnet50,14.94,0.3012
