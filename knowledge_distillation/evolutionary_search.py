@@ -7,8 +7,8 @@ import torch
 import random
 from sklearn.metrics import f1_score
 
-def evaluate_fitness(config, supernet, val_loader, train_loader, param_constraint, device):
-    size_m = get_model_size(supernet, config)
+def evaluate_fitness(config, supernet, val_loader, train_loader, param_constraint, device, teacher_name):
+    size_m = get_model_size(teacher_name, config)
     if size_m > param_constraint:
         return 0, size_m
 
@@ -40,73 +40,73 @@ def evaluate_fitness(config, supernet, val_loader, train_loader, param_constrain
     return fitness, size_m
     
 
-'''def get_model_size(supernet, config):
-    # estimates total params in model
-    total_params = 0
-    
+def get_model_size(model_type, config, num_classes=61):
     w = config['width']
     depths = config['depth']
-    exps = config['exp']
+    exps = config.get('exp', [1.0, 1.0, 1.0, 1.0]) # Handle missing exp for non-R50
+    total_params = 0
     
-    base_channels = [64, 128, 256, 512]
-    
-    # initial layers
-    total_params += (3 * int(base_channels[0] * w) * 3 * 3)
-    
-    # stages
-    in_channels = int(base_channels[0] * w)
-    for stage_idx in range(4):
-        out_channels = int(base_channels[stage_idx] * w)
-        num_blocks = depths[stage_idx]
-        exp_ratio = exps[stage_idx]
+    if model_type == 'resnet50':
+        base_channels = [64, 128, 256, 512]
+        # Standard ResNet50 output expansion is 4 (e.g., 512 -> 2048)
+        out_expansion = 4 
+        is_bottleneck = True
+        deep_stem = False
+        max_exp=3.0
+    elif model_type == 'resnet10t':
+        # "T" variants often start narrower or use different scaling
+        # Example: ResNet-10t might use [32, 64, 128, 256] 
+        # Check your specific supernet implementation here!
+        base_channels = [32, 64, 128, 256] 
+        out_expansion = 1
+        is_bottleneck = False
+        deep_stem = True # ResNet-T uses 3x3 convs in stem
         
-        for _ in range(num_blocks):
-            # middle channels
-            mid_channels = int(in_channels * exp_ratio)
-            
-            # conv layers
-            total_params += (in_channels * mid_channels * 1 * 1) # Expansion
-            total_params += (mid_channels * mid_channels * 3 * 3) # Depthwise/Spatial
-            total_params += (mid_channels * out_channels * 1 * 1) # Projection
-            
-            in_channels = out_channels
-            
-    # final classifier
-    total_params += (in_channels * 61)
-    return total_params / 1e6 # Return in Millions (M)'''
+    else: # resnet18
+        base_channels = [64, 128, 256, 512]
+        out_expansion = 1
+        is_bottleneck = False
+        deep_stem = False
 
+    # --- 2. STEM ---
+    stem_width = int(base_channels[0] * w)
+    if deep_stem:
+        # Three 3x3 convs
+        total_params += (3 * stem_width * 3 * 3) + (stem_width * stem_width * 3 * 3) * 2
+    else:
+        # Standard 7x7
+        total_params += (3 * stem_width * 7 * 7)
+    
+    in_channels = stem_width
 
-def get_model_size(supernet, config):
-    # ResNet18 BasicBlock: two 3x3 convs per block
-    total_params = 0
-    w = config['width']
-    depths = config['depth']
-    
-    base_channels = [64, 128, 256, 512]
-    
-    # Stem: 7x7 conv
-    stem_out = int(64 * w)
-    total_params += (3 * stem_out * 7 * 7)
-    
-    in_channels = stem_out
-    for stage_idx in range(4):
-        out_channels = int(base_channels[stage_idx] * w)
-        num_blocks = depths[stage_idx]
+    # --- 3. STAGES ---
+    for stage_idx, num_blocks in enumerate(depths):
+        base_mid = base_channels[stage_idx]
+        # Apply width multiplier to the base channels of this stage
+        out_channels = int(base_mid * out_expansion * w)
         
         for i in range(num_blocks):
-            # Block Conv 1 (3x3)
-            total_params += (in_channels * out_channels * 3 * 3)
-            # Block Conv 2 (3x3)
-            total_params += (out_channels * out_channels * 3 * 3)
-            
-            # Shortcut connection if stride/channels change
-            if i == 0 and (in_channels != out_channels or stage_idx > 0):
-                total_params += (in_channels * out_channels * 1 * 1)
+            if is_bottleneck:
+                # 1x1 down -> 3x3 mid -> 1x1 up (expansion)
+                mid_ch = round(base_mid * w * exps[stage_idx])
+                total_params += (in_channels * mid_ch * 1 * 1) 
+                total_params += (mid_ch * mid_ch * 3 * 3)
+                total_params += (mid_ch * out_channels * 1 * 1)
                 
-            in_channels = out_channels
-            
-    # Final classifier
-    total_params += (in_channels * 122) # Use your actual num_classes
+                if i == 0: # Shortcut
+                    total_params += (in_channels * out_channels * 1 * 1)
+                in_channels = out_channels
+            else:
+                # Basic Block (3x3 -> 3x3)
+                total_params += (in_channels * out_channels * 3 * 3)
+                total_params += (out_channels * out_channels * 3 * 3)
+                
+                if i == 0 and (in_channels != out_channels):
+                    total_params += (in_channels * out_channels * 1 * 1)
+                in_channels = out_channels
+
+    # --- 4. CLASSIFIER ---
+    total_params += (in_channels * num_classes)
     return total_params / 1e6
 
 
@@ -125,7 +125,7 @@ def run_evolutionary_search(supernet, val_loader, train_loader, device, cfg,
         
         for config in population:
             # evaluate population fitness
-            f1, size = evaluate_fitness(config, supernet, val_loader, train_loader, param_limit, device)
+            f1, size = evaluate_fitness(config, supernet, val_loader, train_loader, param_limit, device, cfg.teacher_name)
             results.append((f1, size, config))
         
         # sort by F1
@@ -150,7 +150,7 @@ def run_evolutionary_search(supernet, val_loader, train_loader, device, cfg,
         next_gen = parents.copy()
         while len(next_gen) < population_size:
             p1, p2 = random.sample(parents, 2)
-            child = crossover(p1, p2)
+            child = crossover(p1, p2, cfg.teacher_name)
             child = mutate(child, 0.2, cfg)
             next_gen.append(child)
             
@@ -175,7 +175,7 @@ def get_random_config(config):
             'depth': [random.choice(config.supernet_depth) for _ in range(4)],
             }
     
-    if config.teacher_name == 'resnet10t':
+    if config.teacher_name == 'resnet10':
         return {
             'res': random.choice(config.supernet_res),
             'width': random.choice(config.supernet_width),
@@ -184,7 +184,7 @@ def get_random_config(config):
 
     
 
-def crossover(config_a, config_b):
+def crossover(config_a, config_b, model_name):
     # mixes successful parents
     new_config = {}
     # randomly pick resolution and width from either parent
@@ -193,7 +193,8 @@ def crossover(config_a, config_b):
     
     # mix depths and expansions block by block
     new_config['depth'] = [random.choice([d1, d2]) for d1, d2 in zip(config_a['depth'], config_b['depth'])]
-    #new_config['exp'] = [random.choice([e1, e2]) for e1, e2 in zip(config_a['exp'], config_b['exp'])]
+    if model_name == 'resnet50':
+        new_config['exp'] = [random.choice([e1, e2]) for e1, e2 in zip(config_a['exp'], config_b['exp'])]
     
     return new_config
 
@@ -205,7 +206,7 @@ def mutate(config, mutation_rate=0.2, cfg=None):
             if gene_to_flip == 'res': config['res'] = random.choice(cfg.supernet_res)
             elif gene_to_flip == 'width': config['width'] = random.choice(cfg.supernet_width)
             elif gene_to_flip == 'depth': config['depth'][random.randint(0,3)] = random.choice(cfg.supernet_depth)
-            elif gene_to_flip == 'exp': config['exp'][random.randint(0,3)] = random.choice(cfg.expansion_ratio)
+            elif gene_to_flip == 'exp': config['exp'][random.randint(0,3)] = random.choice(cfg.supernet_expansion)
         
         elif cfg.teacher_name == 'resnet18':
             gene_to_flip = random.choice(['res', 'width', 'depth'])
@@ -213,7 +214,7 @@ def mutate(config, mutation_rate=0.2, cfg=None):
             elif gene_to_flip == 'width': config['width'] = random.choice(cfg.supernet_width)
             elif gene_to_flip == 'depth': config['depth'][random.randint(0,3)] = random.choice(cfg.supernet_depth)
         
-        elif cfg.teacher_name == 'resnet18':
+        elif cfg.teacher_name == 'resnet10':
             gene_to_flip = random.choice(['res', 'width', 'depth'])
             if gene_to_flip == 'res': config['res'] = random.choice(cfg.supernet_res)
             elif gene_to_flip == 'width': config['width'] = random.choice(cfg.supernet_width)

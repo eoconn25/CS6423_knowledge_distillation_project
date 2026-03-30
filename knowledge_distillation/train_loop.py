@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import random
 
 # define our distillation loss - we can latr scale to include feature distillation if needed
-'''class DistillationLoss(nn.Module):
+class DistillationLoss(nn.Module):
     def __init__(self, T, alpha=0.5):
         super().__init__()
         self.T = T  # temp param for scaling our ditribution
@@ -19,46 +19,43 @@ import random
         ) * (self.T ** 2)
         
         # hard loss - just cross entropy!
-        hard_loss = F.cross_entropy(student_logits, labels)
+        hard_loss = F.cross_entropy(student_logits, labels, label_smoothing=0.1)
         
-        return self.alpha * soft_loss + (1 - self.alpha) * hard_loss, soft_loss'''
+        return self.alpha * soft_loss + (1 - self.alpha) * hard_loss, soft_loss
 
-# distillation based on mse rather than kl divergence
-class DistillationLoss(nn.Module):
-    def __init__(self, alpha=0.1):
-        super().__init__()
-        # We generally drop T (Temperature) for Logit Matching 
-        # because we are comparing raw numbers, not sharpened distributions.
-        self.alpha = alpha  
 
-    def forward(self, student_logits, teacher_logits, labels):
-        # 1. Soft Loss: Mean Squared Error between raw logits
-        # This is the "Tracing" part—matching raw floating point values.
-        soft_loss = F.mse_loss(student_logits, teacher_logits)
-        
-        # 2. Hard Loss: Standard Cross Entropy
-        # This ensures the student still learns the ground truth labels.
-        hard_loss = F.cross_entropy(student_logits, labels)
-        
-        # We weight it heavily toward the teacher (alpha=0.9) to pull
-        # the student out of that 10% accuracy floor.
-        total_loss = self.alpha * soft_loss + (1 - self.alpha) * hard_loss
-        
-        return total_loss, soft_loss
-    
 # GreedyNAS path sampler - grabs random parameters for our samples
-def sample_configs(num_samples=10):
+def sample_configs(config, num_samples=10):
     configs = []
-    for _ in range(num_samples):
-        configs.append({
-            'res': random.choice([128, 160, 190, 224]),
-            'width': random.choice([0.65, 0.8, 1.0, 1.2]),
-            'depth': [random.randint(2, 4) for _ in range(4)],
-            'exp': [random.choice([1.5, 2, 3]) for _ in range(4)]
-        })
+    if config.teacher_name == 'resnet50':
+        for _ in range(num_samples):
+            configs.append({
+                'res': random.choice(config.supernet_res),
+                'width': random.choice(config.supernet_width),
+                'depth': [random.choice(config.supernet_depth) for _ in range(4)],
+                'exp': [random.choice(config.supernet_expansion) for _ in range(4)]
+            })
+    
+    if config.teacher_name == 'resnet18':
+        for _ in range(num_samples):
+            configs.append({
+                'res': random.choice(config.supernet_res),
+                'width': random.choice(config.supernet_width),
+                'depth': [random.choice(config.supernet_depth) for _ in range(4)],
+            })
+    
+    if config.teacher_name == 'resnet10':
+        for _ in range(num_samples):
+            configs.append({
+                'res': random.choice(config.supernet_res),
+                'width': random.choice(config.supernet_width),
+                'depth': [random.choice(config.supernet_depth) for _ in range(4)],
+            })
+            
     return configs
 
 
+from sklearn.metrics import f1_score
 # function for tracking our training - we want to grab losses, KL divergence, and accuracy over time
 class MetricTracker:
     def __init__(self):
@@ -70,27 +67,38 @@ class MetricTracker:
         self.correct = 0
         self.samples = 0
         self.steps = 0
+        self.all_preds = []
+        self.all_labels = []
 
     def update(self, loss, kl, logits, labels):
         self.total_loss += loss
         self.total_kl += kl
         _, predicted = torch.max(logits, 1)
+        
+        # is for accuracy
         self.correct += (predicted == labels).sum().item()
         self.samples += labels.size(0)
         self.steps += 1
+        
+        # is for f1
+        self.all_preds.extend(predicted.cpu().numpy())
+        self.all_labels.extend(labels.cpu().numpy())
 
     def get_stats(self):
+        macro_f1 = f1_score(self.all_labels, self.all_preds, average='macro', zero_division=0)
+        
         return {
             "avg_loss": self.total_loss / self.steps,
             "avg_kl": self.total_kl / self.steps,
-            "accuracy": (self.correct / self.samples) * 100
+            "accuracy": (self.correct / self.samples) * 100,
+            "f1_macro": macro_f1
         }
 
     
 # training loop
 # will need to pass supernet object, teacher, loader, optimizer, and epoch info
-def train_supernet(supernet, teacher, paths_sampled, train_loader, optimizer, epoch, warmup_epochs=10, temperature=4.0, alpha=0.7):
-    criterion = DistillationLoss()  #T=temperature, alpha=alpha
+def train_supernet(supernet, teacher, config, train_loader, optimizer, epoch):
+    criterion = DistillationLoss(T=config.temperature, alpha=config.alpha)  #T=temperature, alpha=alpha
     supernet.train()
     teacher.eval() # make sure teacher is frozen
     tracker = MetricTracker()
@@ -103,21 +111,21 @@ def train_supernet(supernet, teacher, paths_sampled, train_loader, optimizer, ep
         with torch.no_grad():
             teacher_logits = teacher(images)
         
-        if epoch < warmup_epochs:
+        if epoch < config.warmup_epochs:
             phase = 'warm'
-            top_configs = sample_configs(1)  # just sample one path while we warm up - uniform
+            top_configs = sample_configs(config, 1)  # just sample one path while we warm up - uniform
         else:
             phase = 'greed'
             # greedily select M paths
-            candidate_configs = sample_configs(num_samples=paths_sampled)  # get configs for paths
+            candidate_configs = sample_configs(config, num_samples=config.paths_sampled)  # get configs for paths
             path_scores = []
             
             supernet.eval()  # we'll do a quick forward pass to evaluate their performance
             with torch.no_grad():
-                for config in candidate_configs:
-                    output = supernet(images, config)
+                for cfg in candidate_configs:
+                    output = supernet(images, cfg)
                     loss = F.cross_entropy(output, labels)
-                    path_scores.append((loss.item(), config))
+                    path_scores.append((loss.item(), cfg))
             
             # sort paths by lowest loss and grab the top k
             path_scores.sort(key=lambda x: x[0])
@@ -127,8 +135,8 @@ def train_supernet(supernet, teacher, paths_sampled, train_loader, optimizer, ep
         batch_loss = 0.0
         
         # loop through our best k paths and update their weights
-        for config in top_configs:
-            student_logits = supernet(images, config)
+        for cfg in top_configs:
+            student_logits = supernet(images, cfg)
             # if we add feature distillation, it'll be here
             loss, soft_loss = criterion(student_logits, teacher_logits, labels)
             
@@ -147,43 +155,106 @@ def train_supernet(supernet, teacher, paths_sampled, train_loader, optimizer, ep
     return tracker.get_stats(), phase
 
 
-def validate_supernet(supernet, val_loader, config):
+
+def recalibrate_bn(supernet, train_loader, device, sub_config, num_batches=100):
+    supernet.train() # BN updates only happen in train mode
+    with torch.no_grad():
+        for i, (images, _) in enumerate(train_loader):
+            if i >= num_batches:
+                break
+            images = images.to(device)
+            # ensure the supernet uses the specific sub-architecture
+            supernet(images, sub_config)
+
+
+    
+def validate_supernet(supernet, train_loader, val_loader, config):
     supernet.eval()
     
-    # define min and max configurations for the model
-    max_config = {
-        'res': 224, 'width': 1.2, 
-        'depth': [max(config.supernet_depth)] * 4, 
-        'exp': [max(config.supernet_expansion)] * 4
-    }
-    min_config = {
-        'res': 128, 'width': 0.65, 
-        'depth': [min(config.supernet_depth)] * 4, 
-        'exp': [min(config.supernet_expansion)] * 4
-    }
+    if config.teacher_name == 'resnet50':
+        # define min and max configurations for the RN50
+        max_config = {
+            'res': max(config.supernet_res), 
+            'width': max(config.supernet_width), 
+            'depth': [max(config.supernet_depth)] * 4, 
+            'exp': [max(config.supernet_expansion)] * 4
+        }
+        min_config = {
+            'res': min(config.supernet_res), 
+            'width': min(config.supernet_width), 
+            'depth': [min(config.supernet_depth)] * 4, 
+            'exp': [min(config.supernet_expansion)] * 4
+        }
+    else:
+        # we don;t need exp in there for RN18 and RN10t
+        max_config = {
+            'res': max(config.supernet_res), 
+            'width': max(config.supernet_width), 
+            'depth': [max(config.supernet_depth)] * 4, 
+        }
+        min_config = {
+            'res': min(config.supernet_res), 
+            'width': min(config.supernet_width), 
+            'depth': [min(config.supernet_depth)] * 4, 
+        }
+        
     
-    results = {"MAX": {"correct": 0, "loss": 0.0}, "MIN": {"correct": 0, "loss": 0.0}}
-    total_samples = 0
+    stats = {}
 
-    with torch.no_grad():
-        for images, labels in val_loader:
-            images, labels = images.to(config.device), labels.to(config.device)
-            total_samples += labels.size(0)
-            
-            for name, sub_config in [("MAX", max_config), ("MIN", min_config)]:
+    # We iterate through each path separately so we can recalibrate once per path
+    for name, sub_config in [("MAX", max_config), ("MIN", min_config)]:
+        
+        #recalibrate BN
+        print(f"Recalibrating BN for {name} path...")
+        recalibrate_bn(supernet, train_loader, config.device, sub_config, num_batches=100)
+        
+        # validation
+        supernet.eval()
+        correct = 0
+        total_loss = 0.0
+        total_samples = 0
+        
+        val_preds = []
+        val_labels_list = []
+        
+        with torch.no_grad():
+            for images, labels in val_loader:
+                images, labels = images.to(config.device), labels.to(config.device)
+                
+                # Use the same sub_config we just recalibrated
                 logits = supernet(images, sub_config)
                 loss = F.cross_entropy(logits, labels)
                 
                 _, predicted = torch.max(logits, 1)
-                results[name]["correct"] += (predicted == labels).sum().item()
-                results[name]["loss"] += loss.item()
+                correct += (predicted == labels).sum().item()
+                total_loss += loss.item()
+                total_samples += labels.size(0)
+                
+                val_preds.extend(predicted.cpu().numpy())
+                val_labels_list.extend(labels.cpu().numpy())
 
-    # report stats
-    stats = {}
-    for name in ["MAX", "MIN"]:
+        # record results for this config
         stats[name] = {
-            "accuracy": (results[name]["correct"] / total_samples) * 100,
-            "avg_loss": results[name]["loss"] / len(val_loader)
+            "accuracy": (correct / total_samples) * 100,
+            "avg_loss": total_loss / len(val_loader),
+            "f1_macro": f1_score(val_labels_list, val_preds, average='macro', zero_division=0)
         }
-    
+
     return stats
+
+
+def evaluate_f1(model, cfg, loader, device):
+    model.eval()
+    all_preds, all_labels = [], []
+    with torch.no_grad():
+        for images, labels in loader:
+            images, labels = images.to(config.device), labels.to(config.device)
+            # Match resolution
+            if images.shape[-1] != cfg['res']:
+                images = F.interpolate(images, size=(cfg['res'], cfg['res']), mode='bilinear')
+            
+            logits = model(images, cfg)
+            preds = torch.argmax(logits, dim=1)
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+    return f1_score(all_labels, all_preds, average='macro', zero_division=0)

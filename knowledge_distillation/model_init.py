@@ -9,9 +9,10 @@ For ResNet, we will be changing:
 - Input size
 - Depth (# convolutional blocks per stage)
 - Width (# filters per conv layer)
-- Expansion ratio (how many stages we have)
+- Expansion ratio (how many stages we have) - only for ResNet50
 
 We'll need to be able to toggle these as we sample different paths'''
+
 
 # instead of using pytorch Conv2d, we define our own customziable class
 class CustomConv(nn.Conv2d):
@@ -27,6 +28,24 @@ class CustomConv(nn.Conv2d):
         return F.conv2d(x, weight, bias, self.stride, self.padding)
     
 
+class CustomBatchNorm(nn.BatchNorm2d):
+    def __init__(self, num_features):
+        super().__init__(num_features)
+        self.active_features = num_features
+        
+    def forward(self, x):
+        return F.batch_norm(
+            x,
+            self.running_mean[:self.active_features],
+            self.running_var[:self.active_features],
+            self.weight[:self.active_features],
+            self.bias[:self.active_features],
+            self.training or not self.track_running_stats,
+            self.momentum,
+            self.eps
+        )
+    
+    
 # this will build out each "stage" of the supernet
 class CustomStage(nn.Module):
     def __init__(self, in_c, mid_c, out_c, max_exp, stride=1):
@@ -81,26 +100,48 @@ class CustomStage(nn.Module):
         return F.relu(out)
     
 
-class CustomBatchNorm(nn.BatchNorm2d):
-    def __init__(self, num_features):
-        super().__init__(num_features)
-        self.active_features = num_features
-        
-    def forward(self, x):
-        return F.batch_norm(
-            x,
-            self.running_mean[:self.active_features],
-            self.running_var[:self.active_features],
-            self.weight[:self.active_features],
-            self.bias[:self.active_features],
-            self.training or not self.track_running_stats,
-            self.momentum,
-            self.eps
-        )
+
     
+# BasicBlock for ResNet18 with 2 conv
+class CustomBasicBlock(nn.Module):
+    def __init__(self, in_c, out_c, stride=1):
+        super().__init__()
+        # use two 3x3 convolutions
+        self.conv1 = CustomConv(in_c, out_c, kernel_size=3, stride=stride, padding=1)
+        self.bn1 = CustomBatchNorm(out_c)
+        self.conv2 = CustomConv(out_c, out_c, kernel_size=3, stride=1, padding=1)
+        self.bn2 = CustomBatchNorm(out_c)
+        
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_c != out_c:
+            self.shortcut = nn.Sequential(
+                CustomConv(in_c, out_c, kernel_size=1, stride=stride),
+                CustomBatchNorm(out_c)
+            )
+
+    def forward(self, x, is_active=True):
+        if not is_active:
+            # If skipping, we must ensure the shortcut matches the active width
+            if len(self.shortcut) > 0:
+                self.shortcut[1].active_features = self.conv2.active_out_channels
+            return self.shortcut(x)
+        
+        # Standard ResNet18 forward pass
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        
+        # Adjust shortcut batchnorm features if used
+        if len(self.shortcut) > 0:
+            self.shortcut[1].active_features = self.conv2.active_out_channels
+            
+        out += self.shortcut(x)
+        return F.relu(out)
+    
+    
+
     
 # big class to actually orchestrate the supernet, build the blocks, etc
-class Supernet(nn.Module):
+class Supernet_resnet50(nn.Module):
     def __init__(self, width_mult_list, expansion_list, num_classes=122):
         super().__init__()
         self.max_w = max(width_mult_list)  # get the max width possible in search space
@@ -177,3 +218,282 @@ class Supernet(nn.Module):
         return x
 
     
+class Supernet_resnet18(nn.Module):
+    def __init__(self, width_mult_list, num_classes=122):
+        super().__init__()
+        self.max_w = max(width_mult_list)
+        
+        # stem
+        self.stem = nn.Sequential(
+            CustomConv(3, int(64 * self.max_w), kernel_size=7, stride=2, padding=3),
+            CustomBatchNorm(int(64 * self.max_w)),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        )
+        
+        # ResNet18 stage channels: 64, 128, 256, 512
+        # max_blocks=3 from the largest depth parameter
+        self.stages = nn.ModuleList([
+            self.make_stage(int(64*self.max_w),  64,  max_blocks=3, stride=1),
+            self.make_stage(int(64*self.max_w),  128, max_blocks=3, stride=2),
+            self.make_stage(int(128*self.max_w), 256, max_blocks=3, stride=2),
+            self.make_stage(int(256*self.max_w), 512, max_blocks=3, stride=2),
+        ])
+        
+        self.classifier = nn.Linear(int(512 * self.max_w), num_classes)
+
+    def make_stage(self, in_c, out_c, max_blocks, stride):
+        blocks = []
+        for i in range(max_blocks):
+            # first block handles stride
+            s = stride if i == 0 else 1
+            b_in = in_c if i == 0 else int(out_c * self.max_w)
+            blocks.append(CustomBasicBlock(b_in, int(out_c * self.max_w), stride=s))
+        return nn.ModuleList(blocks)
+
+    def forward(self, x, config):
+        # input resolution
+        x = F.interpolate(x, size=(config['res'], config['res']), mode='bilinear')
+        
+        # width multiplier
+        current_w = config['width']
+        for m in self.modules():
+            if isinstance(m, CustomConv):
+                m.active_out_channels = round(m.out_channels / self.max_w * current_w)
+                m.active_in_channels = 3 if m.in_channels == 3 else round(m.in_channels / self.max_w * current_w)
+            if isinstance(m, CustomBatchNorm):
+                m.active_features = round(m.num_features / self.max_w * current_w)
+                
+        # forward pass
+        x = self.stem(x)
+        for i, stage in enumerate(self.stages):
+            active_depth = config['depth'][i]
+            for j, block in enumerate(stage):
+                is_active = (j < active_depth)
+                x = block(x, is_active=is_active)
+        
+        # classification
+        x = F.adaptive_avg_pool2d(x, (1, 1)).view(x.size(0), -1)
+        num_active_features = x.size(1)
+        weight = self.classifier.weight[:, :num_active_features]
+        return F.linear(x, weight, self.classifier.bias)
+
+    
+
+class Supernet_resnet10(nn.Module):
+    def __init__(self, width_mult_list, num_classes=61):
+        super().__init__()
+        self.max_w = max(width_mult_list)
+        #self.max_d = max(depth_mult_list)
+        
+        # ResNet-T Deep Stem: 3x 3x3 convolutions
+        self.stem = nn.Sequential(
+            CustomConv(3, int(32 * self.max_w), kernel_size=3, stride=2, padding=1),
+            CustomBatchNorm(int(32 * self.max_w)),
+            nn.ReLU(inplace=True),
+            CustomConv(int(32 * self.max_w), int(32 * self.max_w), kernel_size=3, stride=1, padding=1),
+            CustomBatchNorm(int(32 * self.max_w)),
+            nn.ReLU(inplace=True),
+            CustomConv(int(32 * self.max_w), int(64 * self.max_w), kernel_size=3, stride=1, padding=1),
+            CustomBatchNorm(int(64 * self.max_w)),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        )
+        
+        # ResNet10 Stages: base depth is [1, 1, 1, 1]
+        # We allow search up to 2 blocks per stage
+        self.stages = nn.ModuleList([
+            self.make_stage(int(64*self.max_w),  64,  max_blocks=2, stride=1),
+            self.make_stage(int(64*self.max_w),  128, max_blocks=2, stride=2),
+            self.make_stage(int(128*self.max_w), 256, max_blocks=2, stride=2),
+            self.make_stage(int(256*self.max_w), 512, max_blocks=2, stride=2),
+        ])
+        
+        self.classifier = nn.Linear(int(512 * self.max_w), num_classes)
+    
+    def make_stage(self, in_c, out_c, max_blocks, stride):
+        blocks = []
+        for i in range(max_blocks):
+            # The first block handles the stride; others are stride 1
+            s = stride if i == 0 else 1
+            
+            # Input to the first block is the stage's in_c
+            # Subsequent blocks take the max possible width of the previous block
+            b_in = in_c if i == 0 else int(out_c * self.max_w)
+            
+            # We use CustomBasicBlock (2 convolutions) for ResNet10
+            blocks.append(CustomBasicBlock(b_in, int(out_c * self.max_w), stride=s))
+            
+        return nn.ModuleList(blocks)
+    
+    def forward(self, x, config):
+        # 1. Handle Input Resolution
+        if x.shape[-1] != config['res']:
+            x = F.interpolate(x, size=(config['res'], config['res']), mode='bilinear')
+        
+        # 2. Set Global Width Multiplier
+        current_w = config['width']
+        for m in self.modules():
+            if isinstance(m, CustomConv):
+                # Scale the outputs
+                m.active_out_channels = round(m.out_channels / self.max_w * current_w)
+                # Scale inputs, unless it's the very first layer (RGB input)
+                if m.in_channels == 3:
+                    m.active_in_channels = 3
+                else:
+                    m.active_in_channels = round(m.in_channels / self.max_w * current_w)
+            
+            if isinstance(m, CustomBatchNorm):
+                m.active_features = round(m.num_features / self.max_w * current_w)
+                
+        # 3. Pass through the Deep Stem
+        x = self.stem(x)
+
+        # 4. Pass through Stages (Dynamic Depth)
+        for i, stage in enumerate(self.stages):
+            active_depth = config['depth'][i]
+            for j, block in enumerate(stage):
+                # Only run the block if it falls within the current config's depth
+                is_active = (j < active_depth)
+                x = block(x, is_active=is_active)
+        
+        # 5. Final Pooling and Sliced Classification
+        x = F.adaptive_avg_pool2d(x, (1, 1)).view(x.size(0), -1)
+        
+        # Slice the linear layer weights to match the active width of the last stage
+        num_active_features = x.size(1)
+        weight = self.classifier.weight[:, :num_active_features]
+        return F.linear(x, weight, self.classifier.bias)
+    
+    
+    
+# define a function to save our supernet model
+def save_supernet(model, model_type, path="supernet_checkpoint.pth"):
+    if model_type == 'resnet50':
+        # we'll save the state dict along with the search space for future reference
+        torch.save({
+            'state_dict': model.state_dict(),
+            'width_mult_list': [0.65, 0.8, 1.0, 1.2],
+            'search_space': {
+                'res': [128, 160, 190, 224],
+                'depth': [1, 2, 3]
+            }
+        }, path)
+        print(f"resnet50 supernet saved to {path}")
+        
+    if model_type == 'resnet18':
+        # we'll save the state dict along with the search space for future reference
+        torch.save({
+            'state_dict': model.state_dict(),
+            'width_mult_list': [0.5, 0.75, 1.0, 1.2],
+            'search_space': {
+                'res': [128, 160, 190, 224],
+                'depth': [2, 3, 4],
+                'exp': [3, 4, 6]
+            }
+        }, path)
+        print(f"resnet18 supernet saved to {path}")
+
+        
+# =============== functions for extracting winning student =====================        
+
+class StaticBasicBlock(nn.Module):
+    def __init__(self, in_c, out_c, stride=1):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_c, out_c, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_c)
+        self.conv2 = nn.Conv2d(out_c, out_c, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_c)
+        
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_c != out_c:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_c, out_c, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(out_c)
+            )
+
+    def forward(self, x):
+        out = torch.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        return torch.relu(out)
+        
+        
+
+class StaticResNet(nn.Module):
+    def __init__(self, config, model_type='resnet18', num_classes=61):
+        super().__init__()
+        w = config['width']
+        depths = config['depth']
+        
+        # --- 1. STEM LOGIC ---
+        if model_type == 'resnet10t':
+            # ResNet-T Deep Stem (3x 3x3 convs)
+            self.stem = nn.Sequential(
+                nn.Conv2d(3, int(32*w), 3, stride=2, padding=1, bias=False),
+                nn.BatchNorm2d(int(32*w)),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(int(32*w), int(32*w), 3, stride=1, padding=1, bias=False),
+                nn.BatchNorm2d(int(32*w)),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(int(32*w), int(64*w), 3, stride=1, padding=1, bias=False),
+                nn.BatchNorm2d(int(64*w)),
+                nn.ReLU(inplace=True),
+                nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+            )
+        else:
+            # Standard ResNet Stem (1x 7x7 conv)
+            self.stem = nn.Sequential(
+                nn.Conv2d(3, int(64*w), kernel_size=7, stride=2, padding=3, bias=False),
+                nn.BatchNorm2d(int(64*w)),
+                nn.ReLU(inplace=True),
+                nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+            )
+
+        # --- 2. STAGE LOGIC ---
+        self.stages = nn.ModuleList()
+        in_c = int(64 * w)
+        base_channels = [64, 128, 256, 512]
+        
+        for i, d in enumerate(depths):
+            out_c = int(base_channels[i] * w)
+            blocks = []
+            for j in range(d):
+                stride = 2 if j == 0 and i > 0 else 1
+                # Branching logic for Block Type
+                if model_type == 'resnet50':
+                    # ResNet50 needs expansion logic from the config
+                    exp = config['exp'][i]
+                    blocks.append(StaticBottleneck(in_c if j == 0 else out_c * 4, out_c, exp, stride))
+                else:
+                    blocks.append(StaticBasicBlock(in_c if j == 0 else out_c, out_c, stride))
+            self.stages.append(nn.Sequential(*blocks))
+            in_c = out_c * 4 if model_type == 'resnet50' else out_c
+            
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(in_c, num_classes)
+        
+        
+def extract_winning_student(supernet, config, model_type):
+    # Create the correct static destination
+    student = StaticResNet(config, model_type=model_type)
+    student.eval()
+    
+    super_state = supernet.state_dict()
+    student_state = student.state_dict()
+    
+    # Logic to handle the mismatch between Sequential and ModuleList naming
+    # Supernets often use 'stages.0.0.conv1' while Static might use 'stages.0.conv1'
+    # We use a fuzzy-matching approach to be robust
+    for name, param in student_state.items():
+        if name in super_state:
+            s = param.shape
+            src = super_state[name]
+            
+            # Dimensional Slicing
+            if len(s) == 4: student_state[name].copy_(src[:s[0], :s[1], :s[2], :s[3]])
+            elif len(s) == 1: student_state[name].copy_(src[:s[0]])
+            elif len(s) == 2: student_state[name].copy_(src[:s[0], :s[1]])
+            
+    student.load_state_dict(student_state)
+    return student
