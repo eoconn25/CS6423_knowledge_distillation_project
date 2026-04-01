@@ -82,7 +82,8 @@ class modelTrainer:
             if isinstance(module, nn.BatchNorm2d):
                 module.eval()
 
-    def train_epoch(self, epoch_num):
+    def train_epoch(self, epoch_num, aux_forward_fn=None):
+        # ciara edit: added aux_forward_fn parameter for pwkd
         self.model.train()
 
         total_loss = 0.0
@@ -100,7 +101,15 @@ class modelTrainer:
 
             self.optimizer.zero_grad()
             outputs = self.model(images)
-            loss = self.loss_fn(outputs, labels)
+            
+            # edit: using aux_forward_fn
+            if aux_forward_fn is not None:
+                aux = aux_forward_fn(images)
+                loss = self.loss_fn(outputs, labels, aux=aux)
+            else:
+                loss = self.loss_fn(outputs, labels)
+            # end of edit
+            
             loss.backward()
             self.optimizer.step()
 
@@ -112,7 +121,8 @@ class modelTrainer:
             prog_bar.set_postfix(loss=loss.item())
 
         avg_loss = total_loss / len(self.data_prep.train_loader)
-        macro_f1 = f1_score(all_labels, all_preds, average="macro")
+        # macro_f1 = f1_score(all_labels, all_preds, average="macro")
+        macro_f1 = f1_score(all_labels, all_preds, average="macro", zero_division=0)
 
         return avg_loss, macro_f1
 
@@ -162,15 +172,37 @@ class modelTrainer:
         with open(os.path.join(model_dir, "history.json"), "w") as f:
             json.dump(history_data, f)
 
-    def save_model(self, current_epoch, save_as_object=False):
+    def save_model(self, current_epoch, save_as_object=False, pwkd=False):
         model_dir = os.path.join("trained_models", self.model_name)
         os.makedirs(model_dir, exist_ok=True)
 
         if save_as_object:
-            torch.save(
-                {"model": self.model, "epoch": current_epoch},
-                os.path.join(model_dir, f"{self.model_name}_full.pth"),
-            )
+            if pwkd:
+                # Forward hooks registered by auxiliary modules (e.g. PWKDLoss)
+                # contain local closures that pickle cannot serialize.
+                # We snapshot and clear all hooks before saving, then restore them
+                # immediately after so training can continue uninterrupted.
+                saved_hooks = {}
+                for name, module in self.model.named_modules():
+                    if module._forward_hooks:
+                        saved_hooks[name] = dict(module._forward_hooks)
+                        module._forward_hooks.clear()
+
+                try:
+                    torch.save(
+                        {"model": self.model, "epoch": current_epoch},
+                        os.path.join(model_dir, f"{self.model_name}_full.pth"),
+                    )
+                finally:
+                    # Always restore hooks, even if save raised an exception
+                    for name, module in self.model.named_modules():
+                        if name in saved_hooks:
+                            module._forward_hooks.update(saved_hooks[name])
+            else:
+                torch.save(
+                    {"model": self.model, "epoch": current_epoch},
+                    os.path.join(model_dir, f"{self.model_name}_full.pth"),
+                )
         else:
             torch.save(
                 {"model": self.model.state_dict(), "epoch": current_epoch},
@@ -189,11 +221,12 @@ class modelTrainer:
         )
         self.model.load_state_dict(torch.load(load_path, map_location=self.device))
 
-    def train_all(self, save_as_object=False):
+    def train_all(self, save_as_object=False, aux_forward_fn=None, pwkd=False):
+        # ciara edit: added aux_forward_fn parameter for pwkd
         best_val_f1 = 0
         for epoch in range(self.num_epochs):
             epoch_start_time = time.time()
-            train_loss, train_f1 = self.train_epoch(epoch)
+            train_loss, train_f1 = self.train_epoch(epoch, aux_forward_fn=aux_forward_fn)
             val_loss, val_f1 = self.validate()
             epoch_time = time.time() - epoch_start_time
 
@@ -205,7 +238,7 @@ class modelTrainer:
 
             if val_f1 > best_val_f1:
                 best_val_f1 = val_f1
-                self.save_model(current_epoch=epoch + 1, save_as_object=save_as_object)
+                self.save_model(current_epoch=epoch + 1, save_as_object=save_as_object, pwkd=pwkd)
 
             self.save_history(current_epoch=epoch + 1)
 
