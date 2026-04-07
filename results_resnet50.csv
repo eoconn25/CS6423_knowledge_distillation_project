@@ -1,0 +1,40 @@
+Method,Base_Model,Size_Reduction_Pct,F1_Score
+N/A,resnet50,0.0,0.4938
+Random Pruning,resnet50,9.98,0.0014
+Magnitude Pruning,resnet50,9.98,0.4967
+Random Pruning,resnet50,24.94,0.0027
+Magnitude Pruning,resnet50,24.94,0.4947
+Random Pruning,resnet50,49.89,0.0011
+Magnitude Pruning,resnet50,49.89,0.4294
+Random Pruning,resnet50,74.83,0.0
+Magnitude Pruning,resnet50,74.83,0.0369
+Random Pruning,resnet50,89.8,0.0
+Magnitude Pruning,resnet50,89.8,0.0031
+Quantisation,resnet50,0.0,0.4867
+Quantisation,resnet50,0.0,0.4884
+Quantisation,resnet50,50.0,0.4872
+Quantisation,resnet50,50.0,0.4889
+LTH 10,resnet50,3.6,0.4132
+LTH 25,resnet50,9.01,0.4143
+LTH 50,resnet50,18.01,0.4152
+LTH 75,resnet50,27.02,0.3826
+LTH 90,resnet50,32.42,0.1548
+RGP,resnet50,4.53,0.3751
+RGP,resnet50,7.16,0.3628
+RGP,resnet50,10.01,0.3842
+RGP,resnet50,12.64,0.395
+RGP,resnet50,14.94,0.3771
+NAS+KD,resnet50,29.67,0.388
+PWKD Self (ResNet50),resnet50,0.0,0.4725
+PWKD Self (ResNet50),resnet50,3.18,0.4222
+PWKD Self (ResNet50),resnet50,6.53,0.3705
+PWKD Self (ResNet50),resnet50,9.82,0.3764
+PWKD Self (ResNet50),resnet50,13.17,0.3094
+PWKD Self (ResNet50),resnet50,16.55,0.2907
+PWKD Self (ResNet50),resnet50,19.74,0.0952
+PWKD Self (ResNet50),resnet50,23.08,0.0644
+PWKD Self (ResNet50),resnet50,26.36,0.0327
+PWKD Self (ResNet50),resnet50,29.72,0.0202
+PWKD Self (ResNet50),resnet50,33.1,0.0086
+PWKD Self (ResNet50),resnet50,46.27,0.0009
+PWKD Self (ResNet50),resnet50,59.48,0.0

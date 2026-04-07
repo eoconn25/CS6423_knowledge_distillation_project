@@ -1,0 +1,43 @@
+Method,Base_Model,Size_Reduction_Pct,F1_Score
+N/A,resnet18,0.0,0.4111
+Quantisation,resnet18,0.0,0.4054
+Quantisation,resnet18,0.0,0.4052
+Quantisation,resnet18,50.0,0.4069
+Quantisation,resnet18,50.0,0.4047
+LTH 10,resnet18,2.48,0.444
+LTH 25,resnet18,6.2,0.4157
+LTH 50,resnet18,12.39,0.396
+LTH 75,resnet18,18.59,0.3924
+LTH 90,resnet18,22.31,0.2843
+RGP,resnet18,2.53,0.3809
+RGP,resnet18,7.59,0.347
+RGP,resnet18,14.64,0.3346
+RGP,resnet18,21.26,0.3212
+RGP,resnet18,28.29,0.3051
+NAS+KD,resnet18,49.19,0.3433
+PWKD (ResNet18),resnet18,0.27,0.4192
+PWKD (ResNet18),resnet18,4.74,0.3911
+PWKD (ResNet18),resnet18,9.69,0.3404
+PWKD (ResNet18),resnet18,14.54,0.2835
+PWKD (ResNet18),resnet18,19.49,0.2451
+PWKD (ResNet18),resnet18,24.46,0.1994
+PWKD (ResNet18),resnet18,29.24,0.0354
+PWKD (ResNet18),resnet18,34.2,0.0063
+PWKD (ResNet18),resnet18,39.04,0.0027
+PWKD (ResNet18),resnet18,44.0,0.0009
+PWKD (ResNet18),resnet18,49.01,0.0017
+PWKD (ResNet18),resnet18,68.5,0.0
+PWKD (ResNet18),resnet18,88.05,0.0002
+PWKD Self (ResNet18),resnet18,0.0,0.4211
+PWKD Self (ResNet18),resnet18,4.74,0.4321
+PWKD Self (ResNet18),resnet18,9.69,0.3566
+PWKD Self (ResNet18),resnet18,14.54,0.3449
+PWKD Self (ResNet18),resnet18,19.49,0.2733
+PWKD Self (ResNet18),resnet18,24.5,0.153
+PWKD Self (ResNet18),resnet18,29.24,0.0688
+PWKD Self (ResNet18),resnet18,34.2,0.0194
+PWKD Self (ResNet18),resnet18,39.04,0.0077
+PWKD Self (ResNet18),resnet18,44.0,0.0128
+PWKD Self (ResNet18),resnet18,49.01,0.0001
+PWKD Self (ResNet18),resnet18,68.5,0.0003
+PWKD Self (ResNet18),resnet18,88.05,0.0
