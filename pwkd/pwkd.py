@@ -62,6 +62,12 @@ class AutoPruningModule(nn.Module):
         v = self.conv1d(v).squeeze(1)
         S = self.fc(v).squeeze(0)
         k = max(1, min(int(math.floor(self.pruning_ratio * self.C)), self.C - 1))
+        k = int(math.floor(self.pruning_ratio * self.C))
+        k = min(k, self.C - 1)
+
+        if k == 0:
+            return torch.ones_like(S)
+
         sorted_S, _ = torch.sort(S)
         theta = 0.5 * (sorted_S[k - 1].item() + sorted_S[k].item())
         return differentiable_gate(S, theta)   # (C,)
@@ -229,7 +235,8 @@ def finalise_student(student, pwkd_loss, data_loader, device):
     paired = {}
     for i, (name, _) in enumerate(conv_list):
         if i + 1 < len(conv_list):
-            paired[name] = conv_list[i + 1][0]
+            # paired[name] = conv_list[i + 1][0]
+            paired[name] = name.replace('conv1', 'conv2')
 
     total_pruned   = 0
     total_channels = 0
